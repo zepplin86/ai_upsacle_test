@@ -19,22 +19,28 @@ class RealESRGANRunner:
         device: str = "auto",
         scale: int = 4,
         tile_size: int = 400,
-        tile_pad: int = 10
+        tile_pad: int = 10,
+        half_precision: bool = False,
+        pre_pad: int = 0
     ):
         """
-        RealESRGAN 러너를 초기화합니다.
+        Real-ESRGAN 러너를 초기화합니다.
         
         Args:
             model_name (str): 사용할 모델 이름
             device (str): 사용할 디바이스 ('auto', 'cpu', 'cuda')
             scale (int): 업스케일 배율
-            tile_size (int): 타일 크기 (메모리 절약용)
-            tile_pad (int): 타일 패딩 크기
+            tile_size (int): 타일 크기 (메모리 절약용, 작을수록 더 선명)
+            tile_pad (int): 타일 패딩 크기 (클수록 더 선명)
+            half_precision (bool): 반정밀도 사용 여부 (GPU에서만)
+            pre_pad (int): 사전 패딩 크기
         """
         self.model_name = model_name
         self.scale = scale
         self.tile_size = tile_size
         self.tile_pad = tile_pad
+        self.half_precision = half_precision
+        self.pre_pad = pre_pad
         
         # 디바이스 설정
         if device == "auto":
@@ -60,29 +66,37 @@ class RealESRGANRunner:
             from realesrgan import RealESRGANer
             from basicsr.archs.rrdbnet_arch import RRDBNet
 
-            # 모델 이름에 따른 모델 아키텍처 및 경로 설정
-            if self.model_name == 'RealESRGAN_x4plus':
-                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
-                model_path = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth'
-            elif self.model_name == 'RealESRGAN_x2plus':
+            # scale에 따라 적절한 모델 선택
+            if self.scale == 2:
+                # scale 2용 모델 - 모델 자체가 scale 2로 설계됨
                 model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=2)
                 model_path = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth'
-            else: # RealESRGAN_x4plus_anime_6B
-                 model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=6, num_grow_ch=32, scale=4)
-                 model_path = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.2.4/RealESRGAN_x4plus_anime_6B.pth'
+                self.model_name = 'RealESRGAN_x2plus'
+                model_scale = 2
+            elif self.scale == 3:
+                # scale 3은 x4 모델을 사용하고 outscale=3으로 설정
+                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+                model_path = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth'
+                self.model_name = 'RealESRGAN_x4plus'
+                model_scale = 4
+            else:  # scale 4
+                model = RRDBNet(num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4)
+                model_path = 'https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth'
+                self.model_name = 'RealESRGAN_x4plus'
+                model_scale = 4
 
-            # 업스케일러 초기화
+            # 업스케일러 초기화 - 모델의 실제 scale 사용
             upsampler = RealESRGANer(
-                scale=self.scale,
+                scale=model_scale,  # 모델의 실제 scale 사용
                 model_path=model_path,
                 model=model,
                 tile=self.tile_size,
                 tile_pad=self.tile_pad,
-                pre_pad=0,
-                half=False, # CPU에서는 half-precision 비활성화
+                pre_pad=self.pre_pad,
+                half=self.half_precision,
                 device=self.device
             )
-            print("Real-ESRGAN 모델 로딩 완료")
+            print(f"Real-ESRGAN 모델 로딩 완료 (scale: {self.scale}, model_scale: {model_scale})")
             return upsampler
 
         except ImportError:
@@ -109,7 +123,12 @@ class RealESRGANRunner:
         
         try:
             # Real-ESRGAN 모델로 업스케일링
-            output, _ = self.model.enhance(img, outscale=self.scale)
+            if self.scale == 2:
+                # scale 2 모델은 outscale 파라미터 없이 사용
+                output, _ = self.model.enhance(img)
+            else:
+                # scale 3, 4는 outscale 파라미터 사용
+                output, _ = self.model.enhance(img, outscale=self.scale)
             
             # 결과 저장
             cv2.imwrite(output_path, output)
@@ -182,7 +201,9 @@ class RealESRGANRunner:
             "device": str(self.device),
             "scale": self.scale,
             "tile_size": self.tile_size,
-            "tile_pad": self.tile_pad
+            "tile_pad": self.tile_pad,
+            "half_precision": self.half_precision,
+            "pre_pad": self.pre_pad
         }
 
 

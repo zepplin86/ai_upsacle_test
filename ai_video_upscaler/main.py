@@ -30,6 +30,11 @@ def parse_arguments():
   python main.py --input input/sample.mp4
   python main.py --input input/sample.mp4 --model realesrgan --scale 2
   python main.py --input input/sample.mp4 --model swinir --device cuda --fps 30
+  
+고품질 옵션:
+  python main.py --input input/sample.mp4 --high-quality
+  python main.py --input input/sample.mp4 --tile-size 200 --tile-pad 20
+  python main.py --input input/sample.mp4 --model realesrgan --scale 2 --high-quality --use-ffmpeg
         """
     )
     
@@ -136,6 +141,40 @@ def parse_arguments():
         help="인코딩 프리셋 (기본값: medium)"
     )
     
+    # 고품질 옵션들
+    parser.add_argument(
+        "--tile-size",
+        type=int,
+        default=400,
+        help="타일 크기 (작을수록 더 선명하지만 느림, 기본값: 400)"
+    )
+    
+    parser.add_argument(
+        "--tile-pad",
+        type=int,
+        default=10,
+        help="타일 패딩 크기 (클수록 더 선명하지만 느림, 기본값: 10)"
+    )
+    
+    parser.add_argument(
+        "--half-precision",
+        action="store_true",
+        help="반정밀도 사용 (GPU에서만, 더 빠르지만 품질 저하 가능)"
+    )
+    
+    parser.add_argument(
+        "--pre-pad",
+        type=int,
+        default=0,
+        help="사전 패딩 크기 (기본값: 0)"
+    )
+    
+    parser.add_argument(
+        "--high-quality",
+        action="store_true",
+        help="고품질 모드 (tile-size=200, tile-pad=20, pre-pad=10)"
+    )
+    
     return parser.parse_args()
 
 
@@ -209,11 +248,26 @@ def main():
         print("\n🤖 2단계: AI 모델 초기화")
         print("-" * 40)
         
+        # 고품질 모드 설정
+        if args.high_quality:
+            tile_size = 200
+            tile_pad = 20
+            pre_pad = 10
+            print("🎯 고품질 모드 활성화")
+        else:
+            tile_size = args.tile_size
+            tile_pad = args.tile_pad
+            pre_pad = args.pre_pad
+        
         if args.model == "realesrgan":
             upscaler = RealESRGANRunner(
                 model_name="RealESRGAN_x4plus",
                 device=args.device,
-                scale=args.scale
+                scale=args.scale,
+                tile_size=tile_size,
+                tile_pad=tile_pad,
+                half_precision=args.half_precision,
+                pre_pad=pre_pad
             )
         elif args.model == "swinir":
             upscaler = SwinIRRunner(
@@ -225,6 +279,12 @@ def main():
         print(f"모델: {args.model.upper()}")
         print(f"배율: {args.scale}x")
         print(f"디바이스: {model_info['device']}")
+        if args.model == "realesrgan":
+            print(f"타일 크기: {tile_size}")
+            print(f"타일 패딩: {tile_pad}")
+            print(f"사전 패딩: {pre_pad}")
+            if args.half_precision:
+                print("반정밀도: 활성화")
         
         # 3단계: 프레임 업스케일링
         print("\n✨ 3단계: 프레임 업스케일링")
