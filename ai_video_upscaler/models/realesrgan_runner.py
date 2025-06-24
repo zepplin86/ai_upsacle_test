@@ -21,7 +21,9 @@ class RealESRGANRunner:
         tile_size: int = 400,
         tile_pad: int = 10,
         half_precision: bool = False,
-        pre_pad: int = 0
+        pre_pad: int = 0,
+        text_sharpen: str = "none",
+        sharpen_strength: float = 1.0
     ):
         """
         Real-ESRGAN 러너를 초기화합니다.
@@ -34,6 +36,8 @@ class RealESRGANRunner:
             tile_pad (int): 타일 패딩 크기 (클수록 더 선명)
             half_precision (bool): 반정밀도 사용 여부 (GPU에서만)
             pre_pad (int): 사전 패딩 크기
+            text_sharpen (str): 텍스트 샤프닝 후처리 방법 ("none", "opencv", "pillow")
+            sharpen_strength (float): 샤프닝 강도 (0.0 ~ 2.0)
         """
         self.model_name = model_name
         self.scale = scale
@@ -41,6 +45,8 @@ class RealESRGANRunner:
         self.tile_pad = tile_pad
         self.half_precision = half_precision
         self.pre_pad = pre_pad
+        self.text_sharpen = text_sharpen
+        self.sharpen_strength = sharpen_strength
         
         # 디바이스 설정
         if device == "auto":
@@ -49,6 +55,7 @@ class RealESRGANRunner:
             self.device = torch.device(device)
         
         print(f"디바이스: {self.device}")
+        print(f"텍스트 샤프닝 후처리: {self.text_sharpen} (강도: {self.sharpen_strength})")
         
         # 모델 로드
         self.model = self._load_model()
@@ -105,6 +112,22 @@ class RealESRGANRunner:
             print(f"모델 로딩 중 예기치 않은 오류 발생: {e}")
             raise
     
+    def _opencv_unsharp_mask(self, img, strength=1.0):
+        import cv2
+        import numpy as np
+        blur = cv2.GaussianBlur(img, (0, 0), 3)
+        unsharp = cv2.addWeighted(img, 1.0 + strength, blur, -strength, 0)
+        return unsharp
+
+    def _pillow_sharpen(self, img, strength=1.0):
+        from PIL import Image, ImageFilter
+        import cv2
+        import numpy as np
+        pil_img = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        for _ in range(int(max(1, round(strength*2)))):
+            pil_img = pil_img.filter(ImageFilter.SHARPEN)
+        return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+
     def upscale_image(self, image_path: str, output_path: str) -> None:
         """
         단일 이미지를 업스케일링합니다.
@@ -129,6 +152,11 @@ class RealESRGANRunner:
             else:
                 # scale 3, 4는 outscale 파라미터 사용
                 output, _ = self.model.enhance(img, outscale=self.scale)
+            
+            if self.text_sharpen == "opencv":
+                output = self._opencv_unsharp_mask(output, self.sharpen_strength)
+            elif self.text_sharpen == "pillow":
+                output = self._pillow_sharpen(output, self.sharpen_strength)
             
             # 결과 저장
             cv2.imwrite(output_path, output)
@@ -203,7 +231,9 @@ class RealESRGANRunner:
             "tile_size": self.tile_size,
             "tile_pad": self.tile_pad,
             "half_precision": self.half_precision,
-            "pre_pad": self.pre_pad
+            "pre_pad": self.pre_pad,
+            "text_sharpen": self.text_sharpen,
+            "sharpen_strength": self.sharpen_strength
         }
 
 

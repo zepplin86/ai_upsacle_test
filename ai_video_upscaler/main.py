@@ -175,6 +175,21 @@ def parse_arguments():
         help="고품질 모드 (tile-size=200, tile-pad=20, pre-pad=10)"
     )
     
+    parser.add_argument(
+        "--text-sharpen",
+        type=str,
+        choices=["none", "opencv", "pillow"],
+        default="none",
+        help="텍스트 샤프닝 후처리 방식 (none, opencv, pillow)"
+    )
+    
+    parser.add_argument(
+        "--sharpen-strength",
+        type=float,
+        default=0.5,
+        help="선명화 강도 (0-1, 기본값: 0.5)"
+    )
+    
     return parser.parse_args()
 
 
@@ -267,7 +282,9 @@ def main():
                 tile_size=tile_size,
                 tile_pad=tile_pad,
                 half_precision=args.half_precision,
-                pre_pad=pre_pad
+                pre_pad=pre_pad,
+                text_sharpen=args.text_sharpen,
+                sharpen_strength=args.sharpen_strength
             )
         elif args.model == "swinir":
             upscaler = SwinIRRunner(
