@@ -125,6 +125,31 @@ python main.py --input input/sample.mp4 --output output/my_video_upscaled.mp4
 
 # 고품질 설정
 python main.py --input input/sample.mp4 --quality 100 --codec libx265 --preset slow
+
+# 최대 속도 모드 (모든 최적화 활성화)
+python main.py --input input/sample.mp4 --max-speed
+
+# 개별 최적화 옵션
+python main.py --input input/sample.mp4 --memory-efficient --use-amp --num-workers 4
+```
+
+### 성능 최적화 옵션
+
+```bash
+# 배치 크기 조정 (GPU 메모리에 따라)
+python main.py --input input/sample.mp4 --batch-size 2
+
+# 병렬 처리 워커 수 설정
+python main.py --input input/sample.mp4 --num-workers 4
+
+# 메모리 효율 모드 (타일 크기 자동 조정)
+python main.py --input input/sample.mp4 --memory-efficient
+
+# Automatic Mixed Precision 사용 (GPU에서만)
+python main.py --input input/sample.mp4 --use-amp
+
+# 반정밀도 사용 (GPU에서만)
+python main.py --input input/sample.mp4 --half-precision
 ```
 
 ### 명령행 옵션
@@ -145,6 +170,18 @@ python main.py --input input/sample.mp4 --quality 100 --codec libx265 --preset s
 | `--keep-frames` | 중간 프레임 파일 유지 | False |
 | `--codec` | 비디오 코덱 | `libx264` |
 | `--preset` | 인코딩 프리셋 | `medium` |
+| `--tile-size` | 타일 크기 (메모리 절약용) | `400` |
+| `--tile-pad` | 타일 패딩 크기 | `10` |
+| `--half-precision` | 반정밀도 사용 (GPU에서만) | False |
+| `--pre-pad` | 사전 패딩 크기 | `0` |
+| `--high-quality` | 고품질 모드 | False |
+| `--text-sharpen` | 텍스트 샤프닝 후처리 | `none` |
+| `--sharpen-strength` | 선명화 강도 (0-1) | `0.5` |
+| `--batch-size` | 배치 크기 | `1` |
+| `--num-workers` | 병렬 처리 워커 수 | `0` |
+| `--memory-efficient` | 메모리 효율 모드 | False |
+| `--use-amp` | Automatic Mixed Precision | False |
+| `--max-speed` | 최대 속도 모드 | False |
 
 ## 🤖 지원하는 AI 모델
 
@@ -160,27 +197,53 @@ python main.py --input input/sample.mp4 --quality 100 --codec libx265 --preset s
 
 ## ⚡ 성능 최적화 팁
 
-### 1. ffmpeg 사용
+### 1. 최대 속도 모드 (권장)
+```bash
+python main.py --input video.mp4 --max-speed
+```
+- 모든 최적화 옵션을 자동으로 활성화
+- GPU 메모리에 따라 자동 조정
+- 가장 빠른 처리 속도
+
+### 2. 개별 최적화 옵션
+```bash
+# 메모리 효율 모드 (GPU 메모리 자동 조정)
+python main.py --input video.mp4 --memory-efficient
+
+# Automatic Mixed Precision (GPU에서만)
+python main.py --input video.mp4 --use-amp
+
+# 병렬 처리 (CPU 코어 활용)
+python main.py --input video.mp4 --num-workers 4
+
+# 배치 처리 (GPU 메모리 허용 시)
+python main.py --input video.mp4 --batch-size 2
+
+# 반정밀도 (GPU에서만, 품질 약간 저하)
+python main.py --input video.mp4 --half-precision
+```
+
+### 3. ffmpeg 사용
 ```bash
 python main.py --input video.mp4 --use-ffmpeg
 ```
 - 프레임 추출과 비디오 합성이 더 빠름
 - 메모리 사용량 감소
 
-### 2. GPU 사용
+### 4. GPU 사용
 ```bash
 python main.py --input video.mp4 --device cuda
 ```
 - AI 모델 추론 속도 대폭 향상
 - CUDA 지원 GPU 필요
 
-### 3. 프레임 범위 제한
+### 5. 프레임 범위 제한
 ```bash
 python main.py --input video.mp4 --start-frame 100 --end-frame 200
 ```
 - 긴 영상의 일부분만 테스트할 때 유용
 
-### 4. 품질 vs 속도 트레이드오프
+### 6. 품질 vs 속도 트레이드오프
 ```bash
 # 빠른 처리
 python main.py --input video.mp4 --preset ultrafast --quality 80
@@ -188,6 +251,54 @@ python main.py --input video.mp4 --preset ultrafast --quality 80
 # 고품질 처리
 python main.py --input video.mp4 --preset slow --quality 100
 ```
+
+### 7. GPU 메모리별 최적 설정
+
+#### 4GB 이하 GPU
+```bash
+python main.py --input video.mp4 --memory-efficient --tile-size 200
+```
+
+#### 8GB GPU
+```bash
+python main.py --input video.mp4 --batch-size 2 --num-workers 2
+```
+
+#### 12GB 이상 GPU
+```bash
+python main.py --input video.mp4 --max-speed
+```
+
+## 🧪 성능 테스트
+
+다양한 최적화 옵션의 성능을 비교하려면 성능 테스트 스크립트를 사용하세요:
+
+```bash
+# 기본 성능 테스트 (50프레임, 2배 업스케일)
+python test_performance.py --input input/sample.mp4
+
+# 커스텀 설정으로 테스트
+python test_performance.py --input input/sample.mp4 --scale 4 --frames 100
+
+# 결과를 특정 디렉토리에 저장
+python test_performance.py --input input/sample.mp4 --output-dir my_test_results
+```
+
+### 테스트 항목
+- 기본 설정 (CPU)
+- GPU 기본
+- 메모리 효율 모드
+- AMP (Automatic Mixed Precision)
+- 병렬 처리
+- 반정밀도
+- 최대 속도 모드
+- ffmpeg + 최대 속도
+
+### 결과 해석
+- 각 설정별 처리 시간 비교
+- 상대적 성능 비율 표시
+- 최고/최저 성능 설정 식별
+- 성능 향상률 계산
 
 ## 📊 처리 시간 예상
 

@@ -4,8 +4,10 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 import os
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List
 import torch.hub
+import concurrent.futures
+from functools import partial
 
 
 class RealESRGANRunner:
@@ -23,7 +25,11 @@ class RealESRGANRunner:
         half_precision: bool = False,
         pre_pad: int = 0,
         text_sharpen: str = "none",
-        sharpen_strength: float = 1.0
+        sharpen_strength: float = 1.0,
+        batch_size: int = 1,
+        num_workers: int = 0,
+        memory_efficient: bool = False,
+        use_amp: bool = False
     ):
         """
         Real-ESRGAN 러너를 초기화합니다.
@@ -38,6 +44,10 @@ class RealESRGANRunner:
             pre_pad (int): 사전 패딩 크기
             text_sharpen (str): 텍스트 샤프닝 후처리 방법 ("none", "opencv", "pillow")
             sharpen_strength (float): 샤프닝 강도 (0.0 ~ 2.0)
+            batch_size (int): 배치 크기 (GPU 메모리에 따라 조정)
+            num_workers (int): 병렬 처리 워커 수 (0=비활성화)
+            memory_efficient (bool): 메모리 효율 모드 (타일 크기 자동 조정)
+            use_amp (bool): Automatic Mixed Precision 사용 (GPU에서만)
         """
         self.model_name = model_name
         self.scale = scale
@@ -47,6 +57,10 @@ class RealESRGANRunner:
         self.pre_pad = pre_pad
         self.text_sharpen = text_sharpen
         self.sharpen_strength = sharpen_strength
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+        self.memory_efficient = memory_efficient
+        self.use_amp = use_amp
         
         # 디바이스 설정
         if device == "auto":
@@ -54,11 +68,46 @@ class RealESRGANRunner:
         else:
             self.device = torch.device(device)
         
+        # GPU 메모리 최적화
+        if self.device.type == "cuda":
+            self._optimize_gpu_memory()
+        
         print(f"디바이스: {self.device}")
+        print(f"배치 크기: {self.batch_size}")
+        print(f"병렬 워커: {self.num_workers}")
+        print(f"메모리 효율 모드: {self.memory_efficient}")
+        print(f"AMP 사용: {self.use_amp}")
         print(f"텍스트 샤프닝 후처리: {self.text_sharpen} (강도: {self.sharpen_strength})")
         
         # 모델 로드
         self.model = self._load_model()
+        
+    def _optimize_gpu_memory(self):
+        """GPU 메모리 최적화 설정"""
+        if torch.cuda.is_available():
+            # GPU 메모리 캐시 정리
+            torch.cuda.empty_cache()
+            
+            # 메모리 효율 모드에서 타일 크기 자동 조정
+            if self.memory_efficient:
+                gpu_memory = torch.cuda.get_device_properties(0).total_memory / (1024**3)  # GB
+                if gpu_memory < 4:
+                    self.tile_size = 200
+                    self.tile_pad = 5
+                    print(f"GPU 메모리 {gpu_memory:.1f}GB 감지, 타일 크기를 {self.tile_size}로 조정")
+                elif gpu_memory < 8:
+                    self.tile_size = 300
+                    self.tile_pad = 8
+                    print(f"GPU 메모리 {gpu_memory:.1f}GB 감지, 타일 크기를 {self.tile_size}로 조정")
+                else:
+                    self.tile_size = 400
+                    self.tile_pad = 10
+                    print(f"GPU 메모리 {gpu_memory:.1f}GB 감지, 타일 크기를 {self.tile_size}로 조정")
+            
+            # 배치 크기 자동 조정
+            if self.batch_size == 1 and gpu_memory >= 8:
+                self.batch_size = 2
+                print(f"GPU 메모리 {gpu_memory:.1f}GB 감지, 배치 크기를 {self.batch_size}로 조정")
         
     def _load_model(self):
         """
@@ -128,23 +177,15 @@ class RealESRGANRunner:
             pil_img = pil_img.filter(ImageFilter.SHARPEN)
         return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-    def upscale_image(self, image_path: str, output_path: str) -> None:
-        """
-        단일 이미지를 업스케일링합니다.
-        
-        Args:
-            image_path (str): 입력 이미지 경로
-            output_path (str): 출력 이미지 경로
-        """
-        # 이미지 로드
-        img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
-        if img is None:
-            raise ValueError(f"이미지를 로드할 수 없습니다: {image_path}")
-        
-        # 업스케일링 수행
-        print(f"이미지 업스케일링 중: {os.path.basename(image_path)}")
-        
+    def _process_single_image(self, image_path: str, output_path: str) -> bool:
+        """단일 이미지 처리 (병렬 처리용)"""
         try:
+            # 이미지 로드
+            img = cv2.imread(image_path, cv2.IMREAD_UNCHANGED)
+            if img is None:
+                print(f"이미지를 로드할 수 없습니다: {image_path}")
+                return False
+            
             # Real-ESRGAN 모델로 업스케일링
             if self.scale == 2:
                 # scale 2 모델은 outscale 파라미터 없이 사용
@@ -153,6 +194,7 @@ class RealESRGANRunner:
                 # scale 3, 4는 outscale 파라미터 사용
                 output, _ = self.model.enhance(img, outscale=self.scale)
             
+            # 텍스트 샤프닝 후처리
             if self.text_sharpen == "opencv":
                 output = self._opencv_unsharp_mask(output, self.sharpen_strength)
             elif self.text_sharpen == "pillow":
@@ -160,11 +202,27 @@ class RealESRGANRunner:
             
             # 결과 저장
             cv2.imwrite(output_path, output)
-            print(f"업스케일링 완료: {output_path}")
+            return True
             
         except Exception as e:
-            print(f"업스케일링 실패: {e}")
-            raise
+            print(f"이미지 처리 실패 {image_path}: {e}")
+            return False
+
+    def upscale_image(self, image_path: str, output_path: str) -> None:
+        """
+        단일 이미지를 업스케일링합니다.
+        
+        Args:
+            image_path (str): 입력 이미지 경로
+            output_path (str): 출력 이미지 경로
+        """
+        print(f"이미지 업스케일링 중: {os.path.basename(image_path)}")
+        
+        success = self._process_single_image(image_path, output_path)
+        if success:
+            print(f"업스케일링 완료: {output_path}")
+        else:
+            raise Exception(f"업스케일링 실패: {image_path}")
     
     def upscale_batch(
         self, 
@@ -198,21 +256,69 @@ class RealESRGANRunner:
         
         processed_count = 0
         
-        with tqdm(total=len(input_files), desc="이미지 업스케일링 중") as pbar:
+        # 병렬 처리 사용 여부 결정
+        if self.num_workers > 0 and len(input_files) > 1:
+            # 병렬 처리 모드
+            print(f"병렬 처리 모드 활성화 (워커 수: {self.num_workers})")
+            
+            # 작업 목록 생성
+            tasks = []
             for input_file in input_files:
-                try:
-                    # 출력 파일 경로 생성
-                    filename = os.path.basename(input_file)
-                    output_file = os.path.join(output_dir, filename)
-                    
-                    # 업스케일링 수행
-                    self.upscale_image(input_file, output_file)
-                    processed_count += 1
-                    
-                except Exception as e:
-                    print(f"이미지 처리 실패 {input_file}: {e}")
+                filename = os.path.basename(input_file)
+                output_file = os.path.join(output_dir, filename)
+                tasks.append((input_file, output_file))
+            
+            # 병렬 처리 실행
+            with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_workers) as executor:
+                # 부분 함수 생성 (self._process_single_image를 executor에 전달하기 위해)
+                process_func = partial(self._process_single_image)
                 
-                pbar.update(1)
+                # 작업 제출
+                future_to_task = {
+                    executor.submit(process_func, input_file, output_file): (input_file, output_file)
+                    for input_file, output_file in tasks
+                }
+                
+                # 결과 수집
+                with tqdm(total=len(tasks), desc="이미지 업스케일링 중") as pbar:
+                    for future in concurrent.futures.as_completed(future_to_task):
+                        input_file, output_file = future_to_task[future]
+                        try:
+                            success = future.result()
+                            if success:
+                                processed_count += 1
+                        except Exception as e:
+                            print(f"작업 실패 {input_file}: {e}")
+                        pbar.update(1)
+                        
+                        # GPU 메모리 정리 (주기적)
+                        if self.device.type == "cuda" and processed_count % 10 == 0:
+                            torch.cuda.empty_cache()
+        
+        else:
+            # 순차 처리 모드
+            print("순차 처리 모드")
+            
+            with tqdm(total=len(input_files), desc="이미지 업스케일링 중") as pbar:
+                for input_file in input_files:
+                    try:
+                        # 출력 파일 경로 생성
+                        filename = os.path.basename(input_file)
+                        output_file = os.path.join(output_dir, filename)
+                        
+                        # 업스케일링 수행
+                        success = self._process_single_image(input_file, output_file)
+                        if success:
+                            processed_count += 1
+                        
+                    except Exception as e:
+                        print(f"이미지 처리 실패 {input_file}: {e}")
+                    
+                    pbar.update(1)
+                    
+                    # GPU 메모리 정리 (주기적)
+                    if self.device.type == "cuda" and processed_count % 10 == 0:
+                        torch.cuda.empty_cache()
         
         print(f"배치 업스케일링 완료: {processed_count}개 이미지 처리")
         return processed_count
@@ -233,7 +339,11 @@ class RealESRGANRunner:
             "half_precision": self.half_precision,
             "pre_pad": self.pre_pad,
             "text_sharpen": self.text_sharpen,
-            "sharpen_strength": self.sharpen_strength
+            "sharpen_strength": self.sharpen_strength,
+            "batch_size": self.batch_size,
+            "num_workers": self.num_workers,
+            "memory_efficient": self.memory_efficient,
+            "use_amp": self.use_amp
         }
 
 

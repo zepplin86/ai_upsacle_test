@@ -35,6 +35,11 @@ def parse_arguments():
   python main.py --input input/sample.mp4 --high-quality
   python main.py --input input/sample.mp4 --tile-size 200 --tile-pad 20
   python main.py --input input/sample.mp4 --model realesrgan --scale 2 --high-quality --use-ffmpeg
+
+성능 최적화:
+  python main.py --input input/sample.mp4 --max-speed
+  python main.py --input input/sample.mp4 --memory-efficient --use-amp --num-workers 4
+  python main.py --input input/sample.mp4 --device cuda --batch-size 2 --half-precision
         """
     )
     
@@ -190,6 +195,39 @@ def parse_arguments():
         help="선명화 강도 (0-1, 기본값: 0.5)"
     )
     
+    # 성능 최적화 옵션들
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=1,
+        help="배치 크기 (GPU 메모리에 따라 조정, 기본값: 1)"
+    )
+    
+    parser.add_argument(
+        "--num-workers",
+        type=int,
+        default=0,
+        help="병렬 처리 워커 수 (0=비활성화, 기본값: 0)"
+    )
+    
+    parser.add_argument(
+        "--memory-efficient",
+        action="store_true",
+        help="메모리 효율 모드 (타일 크기 자동 조정)"
+    )
+    
+    parser.add_argument(
+        "--use-amp",
+        action="store_true",
+        help="Automatic Mixed Precision 사용 (GPU에서만, 더 빠름)"
+    )
+    
+    parser.add_argument(
+        "--max-speed",
+        action="store_true",
+        help="최대 속도 모드 (모든 최적화 옵션 활성화)"
+    )
+    
     return parser.parse_args()
 
 
@@ -274,6 +312,25 @@ def main():
             tile_pad = args.tile_pad
             pre_pad = args.pre_pad
         
+        # 최대 속도 모드 설정
+        if args.max_speed:
+            print("⚡ 최대 속도 모드 활성화")
+            # 모든 최적화 옵션 활성화
+            args.memory_efficient = True
+            args.use_amp = True
+            args.half_precision = True
+            args.num_workers = min(4, os.cpu_count() or 1)  # CPU 코어 수에 따라 조정
+            args.batch_size = 2  # GPU 메모리 허용 시 배치 크기 증가
+            tile_size = 600  # 더 큰 타일로 처리 속도 향상
+            tile_pad = 5  # 패딩 최소화
+            pre_pad = 0  # 사전 패딩 비활성화
+            print(f"  - 메모리 효율 모드: 활성화")
+            print(f"  - AMP: 활성화")
+            print(f"  - 반정밀도: 활성화")
+            print(f"  - 병렬 워커: {args.num_workers}")
+            print(f"  - 배치 크기: {args.batch_size}")
+            print(f"  - 타일 크기: {tile_size}")
+        
         if args.model == "realesrgan":
             upscaler = RealESRGANRunner(
                 model_name="RealESRGAN_x4plus",
@@ -284,7 +341,11 @@ def main():
                 half_precision=args.half_precision,
                 pre_pad=pre_pad,
                 text_sharpen=args.text_sharpen,
-                sharpen_strength=args.sharpen_strength
+                sharpen_strength=args.sharpen_strength,
+                batch_size=args.batch_size,
+                num_workers=args.num_workers,
+                memory_efficient=args.memory_efficient,
+                use_amp=args.use_amp
             )
         elif args.model == "swinir":
             upscaler = SwinIRRunner(
@@ -302,6 +363,14 @@ def main():
             print(f"사전 패딩: {pre_pad}")
             if args.half_precision:
                 print("반정밀도: 활성화")
+            if args.batch_size > 1:
+                print(f"배치 크기: {args.batch_size}")
+            if args.num_workers > 0:
+                print(f"병렬 워커: {args.num_workers}")
+            if args.memory_efficient:
+                print("메모리 효율 모드: 활성화")
+            if args.use_amp:
+                print("AMP: 활성화")
         
         # 3단계: 프레임 업스케일링
         print("\n✨ 3단계: 프레임 업스케일링")
